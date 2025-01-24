@@ -1,0 +1,347 @@
+---
+title: "Lab 3 Key"
+author: "Matilde Saucedo"
+format: html
+---
+
+## Load in data and packages
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(here)
+
+t_df<-read_csv(here("data", "titanic_survival.csv"))
+```
+
+## ML Framework
+
+Write a description of how you go about applying machine learning problems. If you drew a diagram, share with a neighbor and discuss.
+
+-   What is the research question, what are you trying to answer
+
+-   Gather data
+
+-   Develop a hypothesis that you want to test
+
+-   Identify the methodology / what models you want to test
+
+-   Map it out with pseudo code
+
+-   Clean data / figure out what variables you are looking at based on exploratory data analysis
+
+-   Choosing metrics (which metrics you are assessing within the model)
+
+-   Split portion of data for training vs testing
+
+-   Build models:
+
+    -   Create the model options based on which are your dependent and independent variables
+
+    -   Data pre-processing –\> tell R how you are going to put the data into the model
+
+    -   Train the model
+
+    -   Tune our model (in data there are hyper parameters that train what the data does) –\> need to have parameter for how the data is going to converge, need to tune model to that (tuning is different than training)
+
+    -   evaluate performance (this is where you use CV fold validation)
+
+    -   model selection
+
+-   Finalize the model (aka train it on whole dataset)
+
+-   Interpret results / visualize / communicate
+
+## Tidymodels Overview
+
+The creators of `tidyverse` have created a new package called `tidymodels` that is designed to make machine learning more accessible to R users. It will help streamline and create a consistent work flow. Allows for using the same framework for over 200 machine algorithms. The package is designed to work with the `tidyverse` and `tidydata` principles.
+
+## Defining a Research Question
+
+What are we trying to solve? The crucial step of any scientist that can take years to define and perfect.
+
+**What factors led to the survival of passengers on the Titanic?**
+
+How will go about solving our question? Use a classification algorithm to predict the survival of passengers on the Titanic. Interpret the variables that control observed outcomes.
+
+In real life, we would have to go out and collect the data. Today, we will use the `titanic` dataset from the `titanic` package.
+
+## Data Exploration/Cleaning
+
+Take 15 minutes to explore the data. Are there any immediate changes to the data that we need to make? What relationships can you see through graphs? What variables could be of interest to predict survival of passengers on the Titanic?
+
+-   Will want to change survived to be non-numeric otherwise R thinks it is continuous
+
+```{r}
+surv_df <- t_df %>%
+  mutate(survived = factor(survived),   ### categorical outcome variables need to be factors
+         pclass   = factor(pclass)) %>% ### turn some predictors to factor
+  select(-cabin, -ticket) ### lots of NAs here - and not likely to be very helpful
+```
+
+```{r}
+
+ggplot(data=t_df, aes(x = pclass, y = fare)) + 
+       geom_point()
+
+
+ggplot(data=t_df, aes(x = pclass, y = fare, color=sex)) + 
+       geom_point()
+
+
+ggplot(data=t_df, aes(x = survived, y = age, color = sex)) + 
+       geom_point()
+
+ggplot(data=t_df, aes(x = pclass, y = fare, color=survived)) + 
+       geom_point()
+
+ggplot(data=t_df, aes(x = survived, y = pclass, color=sex)) + 
+       geom_point()
+
+
+ggplot(data=t_df, aes(x = age, fill = factor(survived))) + 
+       geom_histogram()
+
+
+hist(t_df$survived)
+```
+
+## Data Split
+
+We will set aside (“partition”) a portion of the data for building and comparing our models (80%), and a portion for testing our models after we’ve selected the best one (20%). NOT the same as folds - that will happen in the training/validation step.
+
+```{r}
+### Check balance of survived column (aka how many people survived vs died)
+surv_df %>%
+  group_by(survived) %>%
+  summarize(n = n()) %>%
+  ungroup() %>%
+  mutate(prop = n / sum(n))
+```
+
+Tidymodels will split the data and label it for us. We will tell it proportion of data going into test vs train
+
+```{r}
+set.seed(123)
+
+surv_split <- initial_split(surv_df, prop = 0.80,strata = survived) #the 80 percent is the train data
+  ### stratified on `survived`; training and test splits will both have ~60/40% survived = 0/1, this tells you the porportion of people who survived and split within the test data portion
+#surv_split won't tell you much on its own it just categorizes so you have to do the following steps to have different data frames for training v testing
+
+surv_train_df <- training(surv_split)
+surv_test_df <- testing(surv_split)
+
+```
+
+Check to make sure the data has the same proportion of splits (aka the 60/40 split within the survived column). Why is it important to maintain the same proportion of splits?
+
+```{r}
+surv_train_df %>%
+  group_by(survived) %>%
+  summarize(n = n()) %>%
+  ungroup() %>%
+  mutate(prop = n / sum(n))
+
+surv_test_df %>%
+  group_by(survived) %>%
+  summarize(n = n()) %>%
+  ungroup() %>%
+  mutate(prop = n / sum(n))
+```
+
+## Model Building
+
+Constructing models in `tidymodels` is frighteningly simple. We tell R which kind of algorithm we want to build (model), what package the algorithm should come from (engine), and how to construct it.
+
+```{r}
+log_md <- logistic_reg() %>%
+  set_engine("glm") #this creates an object, if you look at this object it won't really make sense BUT what is important is that this syntax is consistent
+
+lasso_md<- logistic_reg(penalty = 0.037,mixture=1) %>%
+  set_engine("glmnet") #here you will compare it with a lasso logistic regression
+```
+
+### Data Preprocessing
+
+We use recipes (aka an instruction list) to convert our data into the format best suited to our chosen models. Basically we tell R to *consistently* transform our data between all training and testing sets. [This prevents data leakage and ensures that our models are trained on the same data](https://en.wikipedia.org/wiki/Leakage_(machine_learning)).
+
+We're going to build two models: a logistic regression and a lasso logistic regression model.
+
+```{r}
+glm_rec<-recipe(survived ~ sex + pclass, data = surv_train_df) #this will look whether sex and class are the most predictive variables in the model, the latter part tells the model where the data is coming from
+
+# steps we need to do to prepare data for lasso
+
+lasso_rec<-recipe(survived~.,data=surv_train_df) %>% #you are looking at every single column of data that you see in the training data frame
+  update_role(passenger_id, new_role = "ID") %>% #this says that ID is not an independent or dependent variable it's just a market, tells it not to run it
+  step_rm(name,age) %>% #tells it not to consider name and age because there are so many NAs and names are irrelevent
+  step_unknown(all_nominal(),-all_outcomes()) |> #tells it to make a class called unknown for any NA
+  step_dummy(all_nominal(),-all_outcomes()) |>
+  step_zv(all_numeric(),-all_outcomes()) |> #any variables with no variance should be removed
+  step_normalize(all_numeric(),-all_outcomes()) #all numeric data has to be normalized to ensure it is all consitent and on the same scale
+
+```
+
+### Train Model
+
+First we create a workflow that combines all the models and the receipes to control the data. Then we use that consistent pattern to fit our model. First let's compare the models one time. Add comments to the following code chunk to describe what each step is doing. Feel free to run code.
+
+```{r}
+# First the logistic regression
+
+log_wf <- workflow() %>%
+  add_recipe(glm_rec) %>%
+  add_model(log_md) 
+
+log_fit<-log_wf %>%
+  fit(surv_train_df)
+
+log_test<-surv_test_df |> #this produces the predicted outputs for the data based on what the model is calculating on the back end, by default this classification is at a 50% threshold (not currently a way of changing this threshold but they are working to change this)
+  mutate(predict(log_fit, new_data = surv_test_df)) |> 
+  mutate(predict(log_fit,new_data = surv_test_df, type='prob'))
+
+table(log_test$survived, log_test$.pred_class) #this allows us to create a table of how accurate the model was
+
+```
+
+Now fill in the following code chunk to fit the lasso model. Create a table (or sometimes called a confusion matrix) that shows the predicted values versus the actual values.
+
+```{r}
+
+# Now doing this for the Lasso model
+
+lass_wf <- workflow() %>% #here you will set up a workflow that pieces together the recipe and the model, this workflow will help piece and string together everything
+  add_recipe(lasso_rec) %>%
+  add_model(lasso_md) #side note: the focus of this class is to determine which model and recipes are best
+
+lass_fit<-lass_wf %>%
+  fit(surv_train_df)
+
+lass_test<-surv_test_df |>
+  mutate(predict(lass_fit, new_data = surv_test_df)) |> 
+  mutate(predict(lass_fit,new_data = surv_test_df, type='prob'))
+
+table(lass_test$survived, lass_test$.pred_class)
+
+```
+
+### Evaluate Performance
+
+Measure the accuracy using the `accuracy` function from the `yardstick` package for each model.
+
+```{r}
+log_test |> 
+  accuracy(truth = survived, estimate = .pred_class)
+
+lass_test |>
+  accuracy(truth = survived, estimate = .pred_class)
+```
+
+Calculate the `ROC AUC` for each model. Use the `roc_auc` function from yardstick.
+
+```{r}
+
+log_test |> 
+  yardstick::roc_auc(truth = survived, .pred_0)
+
+lass_test |>
+  yardstick::roc_auc(truth = survived, .pred_0)
+
+#why is the AUC different when accuracy is different
+#ROC_AUC changes the thresholds and can capture the nuance, the accuracy always starts with 0.5 and determines if it is yes or now, but roc auc looks at all possible thresholds and sees how accurate the prediction was based on the probability
+
+
+```
+
+### Model Selection
+
+One run of the model is not enough to determine which model is better. We need to run the model multiple times to determine which model is better. We can use cross-validation to determine which model is better. Instead of for loops or purrr, tidymodels as built in functions to do this for us. yay!
+
+```{r}
+set.seed(12)
+
+folds<-vfold_cv(surv_train_df, v=10, strata = survived) #strata is still preserving the proportionality
+
+log_fit_folds<- log_wf |> 
+  fit_resamples(folds)
+
+collect_metrics(log_fit_folds)
+
+lasso_res<-lass_wf %>%
+  fit_resamples(folds)
+
+collect_metrics(lasso_res)
+```
+
+Which model do we choose?
+
+Let's look at the actual models to get a better understanding.
+
+```{r}
+log_fit |> 
+  extract_fit_parsnip()|> 
+  tidy() #here you tell it what variables to consider
+
+lass_fit |>
+  extract_fit_parsnip() |> 
+  tidy() #rather than telling it that you want it to look for a specific coefficient, it takes all possible coefficients and tells you what you need vs what you don't need
+```
+
+Lasso set many of the parameters to zero. How do you interpret this model? Why would you want to use as opposed to simple logistic regression?
+
+### Finalize Model
+
+We will finalize the model by fitting the model to the entire dataset.
+
+```{r}
+final_log<-log_wf |>
+  last_fit(surv_split)
+```
+
+## Interpret and Visualize Results
+
+Everything is stored in a `workflow` object. We can extract the coefficients from the logistic regression model using `extract_fit_parsnip`. The `tidy` function will make the output more readable. Describe the coefficients and what they mean. Create a clean table of the model output.
+
+```{r}
+
+final_log |>
+  extract_fit_parsnip() |>
+  tidy() |> 
+  mutate(odds=exp(estimate),
+         prob=odds/(1+odds))
+
+#This translates the model into odds and probability
+```
+
+Please give this a go on your own with the post-lab exercise. I will be walking around to assist.
+
+## Tuning example
+
+This just shows how to hypertune the `glmnet` penalty parameter. We'll cover more when we get to random forests with Yutian.
+
+```{r}
+set.seed(123)
+
+lambda_grid <- grid_regular(penalty(), levels = 50)
+
+lasso_md_tune<- logistic_reg(penalty = tune(),mixture=1) %>%
+  set_engine("glmnet")
+
+lasso_wf<-workflow() %>%
+  add_model(lasso_md_tune) %>%
+  add_recipe(lasso_rec)
+
+
+set.seed(2020)
+lasso_grid <- tune_grid(
+  lasso_wf,
+  resamples = folds,
+  grid = lambda_grid
+)
+
+lasso_grid %>%
+  collect_metrics()
+
+lowest_rmse <- lasso_grid %>%
+  select_best(metric="roc_auc") #use this metric
+```
